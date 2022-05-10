@@ -17,6 +17,14 @@
 package misc
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"encoding/hex"
+	"fmt"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rlp"
+	"log"
 	"math/big"
 	"testing"
 
@@ -129,4 +137,65 @@ func TestCalcBaseFee(t *testing.T) {
 			t.Errorf("test %d: have %d  want %d, ", i, have, want)
 		}
 	}
+}
+
+func TestETHTransfer(t *testing.T) {
+	client, err := ethclient.Dial("https://ropsten.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161")
+	if err != nil {
+		log.Fatal(err)
+	}
+	privateKey, err := crypto.HexToECDSA("4b162c7a41d8935b8ca700fb314f0f32f4ab13989e6e73b544b4ed1bd5fb8639")
+	if err != nil {
+		log.Fatal(err)
+	}
+	publicKey := privateKey.Public()
+	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
+	if !ok {
+		log.Fatal("Unable to cast")
+	}
+	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
+	address := hex.EncodeToString(fromAddress[:])
+	fmt.Println("Address: 0x" + address)
+	nonce, err := client.PendingNonceAt(context.Background(), fromAddress)
+	if err != nil {
+		log.Fatal("Unable to get nonce")
+	}
+	fmt.Println("Nonce:", nonce)
+	toAddress := common.HexToAddress("0x409294dF5a810bdF2dA4b053a5f9d5EfB2D53f16")
+	value := big.NewInt(10000000000000000)
+	gasFeeCap, gasTip, gas := big.NewInt(120000000000), big.NewInt(4000000000), uint64(80000)
+
+	var data []byte
+
+	tx := types.NewTx(&types.DynamicFeeTx{
+		Nonce:     nonce,
+		GasFeeCap: gasFeeCap,
+		GasTipCap: gasTip,
+		Gas:       gas,
+		To:        &toAddress,
+		Value:     value,
+		Data:      data,
+	})
+
+	cfg, block := params.RopstenChainConfig, params.RopstenChainConfig.LondonBlock
+	signer := types.MakeSigner(cfg, block)
+	signedTx, err := types.SignTx(tx, signer, privateKey)
+	if err != nil {
+		log.Fatal("Unable to sign Tx\n", err)
+	}
+
+	hash := signedTx.Hash().Bytes()
+
+	raw, err := rlp.EncodeToBytes(signedTx)
+	if err != nil {
+		log.Fatal("Unable to cast to raw txn")
+	}
+
+	fmt.Printf("Hash: %x\n%x\n", hash, raw)
+
+	err = client.SendTransaction(context.Background(), signedTx)
+	if err != nil {
+		log.Fatal("Unable to send transaction", err)
+	}
+	fmt.Printf("Tx send: %s", signedTx.Hash().Hex())
 }
