@@ -21,9 +21,11 @@ import (
 	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rlp"
+	"golang.org/x/crypto/sha3"
 	"log"
 	"math/big"
 	"testing"
@@ -163,15 +165,20 @@ func TestETHTransfer(t *testing.T) {
 	fmt.Println("Nonce:", nonce)
 	toAddress := common.HexToAddress("0x409294dF5a810bdF2dA4b053a5f9d5EfB2D53f16")
 	value := big.NewInt(10000000000000000)
-	gasFeeCap, gasTip, gas := big.NewInt(120000000000), big.NewInt(4000000000), uint64(80000)
+
+	gasLimit := uint64(21000)
+	gasTipCap, _ := client.SuggestGasTipCap(context.Background())
+	gasFeeCap, _ := client.SuggestGasPrice(context.Background())
+	fmt.Println("Gas Tip Cap: " + gasTipCap.String())
+	fmt.Println("Gas Price: " + gasFeeCap.String())
 
 	var data []byte
 
 	tx := types.NewTx(&types.DynamicFeeTx{
 		Nonce:     nonce,
 		GasFeeCap: gasFeeCap,
-		GasTipCap: gasTip,
-		Gas:       gas,
+		GasTipCap: gasTipCap,
+		Gas:       gasLimit,
 		To:        &toAddress,
 		Value:     value,
 		Data:      data,
@@ -198,4 +205,88 @@ func TestETHTransfer(t *testing.T) {
 		log.Fatal("Unable to send transaction", err)
 	}
 	fmt.Printf("Tx send: %s", signedTx.Hash().Hex())
+}
+
+func TestETHTokenTransfer(t *testing.T) {
+	client, err := ethclient.Dial("https://ropsten.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161")
+	if err != nil {
+		log.Fatal(err)
+	}
+	privateKey, err := crypto.HexToECDSA("4b162c7a41d8935b8ca700fb314f0f32f4ab13989e6e73b544b4ed1bd5fb8639")
+	if err != nil {
+		log.Fatal(err)
+	}
+	publicKey := privateKey.Public()
+	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
+	if !ok {
+		log.Fatal("Unable to cast")
+	}
+	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
+	address := hexutil.Encode(fromAddress[:])
+	fmt.Println("Address: " + address)
+	nonce, err := client.PendingNonceAt(context.Background(), fromAddress)
+	if err != nil {
+		log.Fatal("Unable to get nonce")
+	}
+	fmt.Println("Nonce:", nonce)
+	toAddress := common.HexToAddress("0x409294dF5a810bdF2dA4b053a5f9d5EfB2D53f16")
+	tokenAddress := common.HexToAddress("0x91565011007d12bd0970d72f96e83224fddecb73")
+	value := big.NewInt(0)
+
+	transferFnSignature := []byte("transfer(address,uint256)")
+	hash := sha3.NewLegacyKeccak256()
+	hash.Write(transferFnSignature)
+	methodID := hash.Sum(nil)[:4]
+	fmt.Println("Method Id: " + hexutil.Encode(methodID)) // 0xa9059cbb
+
+	paddedAddress := common.LeftPadBytes(toAddress.Bytes(), 32)
+	fmt.Println("Token Address: " + hexutil.Encode(paddedAddress))
+
+	amount := new(big.Int)
+	amount.SetString("1000000000000000000", 10)
+	paddedAmount := common.LeftPadBytes(amount.Bytes(), 32)
+	fmt.Println("Hex Amount: " + hexutil.Encode(paddedAmount))
+
+	var data []byte
+	data = append(data, methodID...)
+	data = append(data, paddedAddress...)
+	data = append(data, paddedAmount...)
+
+	gasTipCap, _ := client.SuggestGasTipCap(context.Background())
+	gasFeeCap, _ := client.SuggestGasPrice(context.Background())
+	fmt.Println("Gas Tip Cap: " + gasTipCap.String())
+	fmt.Println("Gas Price: " + gasFeeCap.String())
+
+	tx := types.NewTx(&types.DynamicFeeTx{
+		Nonce:     nonce,
+		GasFeeCap: gasFeeCap,
+		GasTipCap: gasTipCap,
+		Gas:       uint64(80000),
+		To:        &tokenAddress,
+		Value:     value,
+		Data:      data,
+	})
+	cfg, block := params.RopstenChainConfig, params.RopstenChainConfig.LondonBlock
+	signer := types.MakeSigner(cfg, block)
+	signedTx, err := types.SignTx(tx, signer, privateKey)
+	if err != nil {
+		log.Fatal("Unable to sign Tx\n", err)
+	}
+
+	txHash := signedTx.Hash().Bytes()
+
+	raw, err := rlp.EncodeToBytes(signedTx)
+	if err != nil {
+		log.Fatal("Unable to cast to raw txn")
+	}
+
+	fmt.Printf("Tx Hash: %x\n", txHash)
+
+	fmt.Printf("Raw Tx: %x\n", raw)
+
+	err = client.SendTransaction(context.Background(), signedTx)
+	if err != nil {
+		log.Fatal("Unable to send transaction", err)
+	}
+	fmt.Println("Tx send, view on explorer: https://ropsten.etherscan.io/tx/" + signedTx.Hash().Hex())
 }
